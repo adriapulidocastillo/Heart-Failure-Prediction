@@ -2,7 +2,7 @@
 
 ## Files
 
-### mainR.Rmd:
+### mainR.Rmd
 Code used for clean and modeling the dataset. Coded in R.
 
 ### heart.xls
