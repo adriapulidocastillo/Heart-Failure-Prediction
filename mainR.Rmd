@@ -1,0 +1,283 @@
+---
+title: 'Tipología de datos: PRA2'
+author: "Autor: Adrià Pulido"
+output:
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+  word_document: default
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+******
+
+# Integración de datos
+
+El conjunto de datos se encuentra en un único fichero .xls con formato csv. Para cargar el conjunto de datos leeremos este fichero aclarando que los campos están separados por comas. Los atributos categóricos que se codifican como 0s y 1s (FastingBS y la variable objetivo HeartDisease) se cargan como campos numéricos, he modificado su tipo para no tener problemas en posteriores etapas.
+
+```{r}
+# Cargamos los paquetes R que vamos a usar
+#install.packages("missForest")
+library(missForest)
+library(rpart)
+library(rpart.plot)
+library(corrplot)
+
+# cargamos los datos de los pacientes
+data = read.table("heart.xls",sep=",",header=TRUE)
+
+# Modificamos el tipo de datos de los atributos que se hayan cargado de forma incorrecta
+data$FastingBS <- factor(data$FastingBS, levels = c(0, 1), label = c("< 120 mg/dl", "> 120 mg/dl"))
+data$HeartDisease <- factor(data$HeartDisease, levels = c(0, 1), labels = c("N", "Y"))
+
+str(data)
+```
+En la descripción del dataset se puede ver una descripción de los campos que contiene:
+- Age: Edad del paciente en años.
+- Sex: Sexo del paciente [M: Masculino, F: Femenino]
+- ChestPainType: Tipo de dolor de pecho  [TA: angina típica, ATA: angina atípica, NAP: dolor no anginal, ASY: asintomático]
+- RestingBP: Presión arterial en reposo en mmHg
+- Cholesterol: Colesterol sérico en mm / dl
+- FastingBS: Azúcar en sangre en ayunas [1: si BS en ayunas> 120 mg / dl, 0: en caso contrario]
+- RestingECG: Resultados del electrocardiograma en reposo [Normal: Normal, ST: con anomalía de la onda ST-T, LVH: muestra una hipertrofia ventricular según los criterios de Estes]
+- MaxHR: Frecuencia cardíaca máxima alcanzada
+- ExerciseAngina: Angina inducida por el ejercicio
+- Oldpeak: Depresión del ST inducida por el ejercicio en relación con el reposo
+- ST_Slope: pico de la pendiente del segmento ST haciendo ejercicio [Up: ascendente, Flat: plano, Down: descendente] 
+- HeartDisease: Variable objetivo [1: enfermedad cardíaca, 0: Normal]
+
+# Limpieza de datos
+
+## Valores nulos
+
+Para buscar los valores nulos primero se buscará en el conjunto de datos si existe algún registro que contenga valores desconocidos NA (Not Available). Posteriormente se revisará cada atributo para asegurarnos que no se han codificado los calores inexistentes con una categoría concreta. Para comprobar los atributos categóricos utilizaremos sus gráficos de barras y, en el siguiente apartado, revisaremos los datos numéricos calculando sus gráficos de cajas, que nos servirá para ver si existen outliers o registros inexistentes codificados con valores fuera del rango posible de estos atributos.
+
+```{r}
+sapply(data, function(x) sum(is.nan(x)))
+```
+Podemos ver en la tabla anterior como no existen valores no nulos en nuestro dataset. Vamos a continuar revisando las variables categóricas revisando sus gráficos de barras.
+
+```{r}
+for (attribute in names(data))
+{
+  if(is.factor(data[,attribute]))
+  {
+      barplot(table(data[,attribute]), ylab = attribute, main = paste(attribute, " Barplot"))
+  }
+}
+```
+
+Podemos ver en las gráficas anteriores como todas las variables categóricas tienen las categorías definidas en la descripción del conjunto de datos (no hay ningún valor de estos atributos que valgan valores como ‘?’ o ‘Desconocido’), estos atributos son correctos.
+
+## Valores extremos
+
+Como se ha comentado en el apartado anterior se utilizarán los gráficos de cajas de los atributos numéricos para revisar si existen valores outliers o registros inexistentes codificados con valores fuera del rango posible de estos atributos.
+
+
+```{r}
+for (attribute in names(data))
+{
+  if(is.numeric(data[,attribute]))
+  {
+      boxplot(data[,attribute], ylab = attribute, main = paste(attribute, " Boxplot"))
+  }
+}
+```
+
+Podemos ver como existen valores outliers en todos los atributos menos en la edad, pasaremos a revisarlos uno a uno.
+
+### RestingBP:
+
+```{r}
+boxplot.stats(data$RestingBP)$out
+```
+
+Encontramos valores muy altos en la presión sanguínea: hasta 200 mm Hg (se considera que un individuo tiene una crisis hipertensiva a partir de los 180 mm Hg). Pese a que sean valores muy altos entiendo que son posibles, los datos no son incorrectos, no los modificaré. Él datos que sí me causa sospecha es el registro con valor 0 en su presión sanguínea, este valor se ha tenido que guardar en la base de datos de forma incorrecta. Se eliminará este registro.
+
+```{r}
+data = data[!data$RestingBP == 0,]
+```
+
+### Cholesterol
+
+```{r}
+boxplot.stats(data$Cholesterol)$out
+
+paste("Número de registros con colesterol igual a 0: ", sum(data$Cholestero == 0))
+```
+
+En el atributo de colesterol también vemos que tenemos múltiples registros con valor 0 (171), lo cual es imposible, son valores incorrectos. Son una cantidad demasiado elevada de registros como para eliminarlos sin más, utilizaremos el método missForest para predecir el valor que deberían de tener este conjunto de valores. A diferencia de kNN, uno de los métodos más populares para este propósito, missForest no necesita de ningún hiperparámetro, lo que lo hace un método más robusto, y permite trabajar con conjuntos de datos mixtos multidimensionales.
+
+```{r}
+
+data$Cholesterol[data$Cholesterol == 0] = NA
+data.imp <- missForest(data, variablewise = TRUE)
+data$Cholesterol = data.imp$ximp$Cholesterol
+
+boxplot(data$Cholesterol, ylab = "Cholesterol", main = paste("Cholesterol Boxplot"))
+```
+
+Una vez que hemos reemplazado los 0’s por los valores predichos nos encontramos con valores legítimos en el atributo de colesterol. La hipercolesterolemia puede causar valores de entre 300 a 600 mg/dL por lo que hasta los valores más altos son legítimos.
+
+### MaxHR:
+
+```{r}
+boxplot.stats(data$MaxHR)$out
+```
+
+Los valores outliers encontrados en el atributo de ritmo cardiaco son bastante bajos pero posibles en estado de relajación, no se modificarán estos registros.
+
+### Oldpeak
+
+```{r}
+boxplot.stats(data$Oldpeak)$out
+```
+
+Los valores outliers del atributo oldpeak son legítimos, tampoco se modificarán estos registros.
+
+
+## Exportación de los datos preprocesados
+
+```{r}
+write.csv(data, "heart_clean.csv")
+```
+
+# Analisis de datos
+
+## Selección de los grupos de datos a analizar
+
+A continuación se seleccionarán distintos grupos dentro del conjunto de datos que puedan resultar interesantes para analizar y comparar.
+
+```{r}
+# Agrupación por sexo
+data.man = data[data$Sex == 'M', ]
+data.woman = data[data$Sex == 'F', ]
+
+# Agrupación por tipo de dolor en el pecho
+data.typical_angina = data[data$ChestPainType == 'TA', ]
+data.atypical_angina = data[data$ChestPainType == 'ATA', ]
+data.no_angina_pain = data[data$ChestPainType == 'NAP', ]
+data.asyntomptomatic = data[data$ChestPainType == 'ASY', ]
+```
+
+## Comprobación de la normalidad y homogeneidad de la varianza
+
+Primero de todo comprobaremos la normalidad utilizando el test de Shapiro-Wilk, que se considera uno de los métodos más potentes para contrastar la normalidad. Asumiendo como hipótesis nula que la población está distribuida normalmente, si el p-valor es menor al nivel de significancia, generalmente 0.05, entonces la hipótesis nula es rechazada y se concluye que los datos no cuentan con una distribución normal.
+
+```{r}
+shapiro.test(data$Age)
+shapiro.test(data$RestingBP)
+shapiro.test(data$Cholesterol)
+shapiro.test(data$MaxHR)
+shapiro.test(data$Oldpeak)
+```
+
+Podemos ver en el resultado del test de Shapiro-Wilk como ninguna de las variables sigue una distribución normal, todos los tests obtienen un pvalor inferior al nivel de significancia (0.05).
+
+A continuación comprobaré la homogeneidad de la varianza utilizando el test de Fligner-Killeen, un test no paramétrico utilizado cuando los datos no cumplen la condición de normalidad.
+
+```{r}
+fligner.test(Age ~ HeartDisease, data = data)
+fligner.test(RestingBP ~ HeartDisease, data = data)
+fligner.test(Cholesterol ~ HeartDisease, data = data)
+fligner.test(MaxHR ~ HeartDisease, data = data)
+fligner.test(Oldpeak ~ HeartDisease, data = data)
+```
+
+Las variables que presentan homocedasticidad frente a los pacientes con enfermedades cardiovasculares son maxHR y Age, ambas tienen un pvalor superior a 0.05.
+
+## Pruebas estadísticas
+
+### ¿Cómo es la correlación entre las variables?
+La primera prueba que se ha realizado ha sido el cálculo de la correlación entre las variables. Con esta prueba queremos saber si existe alguna correlación muy alta entre 2 variables con lo que podríamos eliminar una de estas para facilitar el proceso de modelaje. Esta correlación se ha realizado con el método de Spearman, una alternativa no paramétrica a la correlación de Pearson, la cual no conlleva ninguna suposición sobre la distribución de los datos.
+
+```{r}
+M = cor(data[,c("Age", "RestingBP", "Cholesterol", "MaxHR", "Oldpeak")], method = "spearman")
+corrplot(M)
+print(M)
+```
+
+No hemos encontrado ninguna correlación fuerte entre las variables, no eliminaremos ninguna variable.
+
+### ¿Hay alguna variable que no influya en tener una enfermedad cardiovascular?
+Seguidamente utilizaremos el test Kruskal-Wallis para realizar un test de contraste de hipótesis entre los 2 grupos para saber si existen diferencias significativas entre los pacientes con enfermedades cardiovasculares y el resto de atributos. El test Kruskal-Wallis es la alternativa no paramétrica al test de ANOVA.
+
+```{r}
+kruskal.test(Age ~ HeartDisease, data = data)
+kruskal.test(RestingBP ~ HeartDisease, data = data)
+kruskal.test(Cholesterol ~ HeartDisease, data = data)
+kruskal.test(MaxHR ~ HeartDisease, data = data)
+kruskal.test(Oldpeak ~ HeartDisease, data = data)
+
+```
+
+Todos los pvalores son inferiores al nivel de significancia (0.05), todas las variables muestran diferencias significativas para los pacientes con y sin enfermedades cardiovasculares, todas las variables influyen en la causa de estas enfermedades.
+
+### ¿Qué atributo influye más a la hora de contraer una enfermedad cardiovascular?
+
+Para finalizar vamos a entrenar un modelo de árbol de decisión simple y vamos a revisar cómo se construye este árbol para saber qué atributo es el más determinante, el que clasifica más registros, a la hora de determinar si un paciente es probable que llegue a desarrollar una enfermedad cardiovascular.
+
+```{r}
+tree <- rpart(HeartDisease ~ ., data = data)
+rpart.plot(tree)
+```
+
+Se puede ver en el gráfico anterior como la primera variable que se consulta es la ST_Slope, donde si esta tiene un valor de “Down” o “Flat” se clasifican el 57% del dataset como enfermos (la clasificación es correcta en un 82%). Posteriormente se revisa el atributo ChestPainType y, si el paciente es asintomático, se clasifica el 29% del dataset como no enfermos (se acierta en el 94% (1 - 0.06) ). 
+
+# Resultados
+
+Para finalizar la práctica intentaremos crear un modelo con el que poder predecir si es probable que un paciente pueda llegar a desarrollar enfermedades cardiovasculares. El modelo que entrenaremos será un randomForest, un modelo parecido al que utilizamos en el apartado "¿Qué atributo influye más en la enfermedad?" pero utilizando 500 árboles en vez de uno, donde se combinan la salida de estos árboles individuales para mejorar el modelo. Antes de crear el modelo normalizamos los valores numéricos del conjunto de datos, con lo que mejoraremos también el proceso aprendizaje, y separaremos el conjunto de datos en dos subconjuntos, uno para entrenar el modelo y otro para validarlo.
+Usaremos la Z-Score Standardization para normalizar los atributos numéricos. Con esta técnica nos aseguramos de que los valores outliers quedan ponderados con más peso que el resto de valores. Normalmente es mejor técnica que la normalización min-max.
+
+```{r}
+library(randomForest)
+library(caTools)
+
+#Normalización 
+data$Age <- (data$Age - mean(data$Age)) / sd(data$Age)
+data$RestingBP <- (data$RestingBP - mean(data$RestingBP)) / sd(data$RestingBP)
+data$Cholesterol <- (data$Cholesterol - mean(data$Cholesterol)) / sd(data$Cholesterol)
+data$MaxHR <- (data$MaxHR - mean(data$MaxHR)) / sd(data$MaxHR)
+data$Oldpeak <- (data$Oldpeak - mean(data$Oldpeak)) / sd(data$Oldpeak)
+
+#Separamos el conjunto de datos en los conjuntos de train y test
+sample = sample.split(data$HeartDisease, SplitRatio = .66)
+train = subset(data, sample == TRUE)
+test  = subset(data, sample == FALSE)
+```
+
+Después de separar el conjunto de datos tenemos 606 registros para entrenar el modelo y 312 para validarlo. Ahora crearemos el modelo con los datos de train.
+
+```{r}
+rf <- randomForest(HeartDisease ~ ., data=train)
+rf
+```
+
+Una vez entrenado el modelo lo utilizaremos para predecir qué pacientes del conjunto de test tienen enfermedades cardiovasculares y crearemos la matriz de confusión.
+
+```{r}
+pred = predict(rf, newdata=test[,-12])
+
+cm = table(test[,12], pred)
+cm
+
+vn = cm[1, 1]
+fn = cm[2, 1]
+fp = cm[1, 2]
+vp = cm[2, 2]
+
+paste("Accuracy: ", round((vp + vn) / (vp + vn + fp + fn), digits = 4))
+paste("Sensibilidad: ", round(vp / (vp + fp), digits = 4))
+```
+
+Podemos ver como el modelo tiene una exactitud del 86.54% y una sensibilidad del 90.18%, se clasifican correctamente el 90.18% de los pacientes que tienen enfermedades cardiovasculares.
+
